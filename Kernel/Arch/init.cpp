@@ -9,6 +9,7 @@
 #include <AK/Types.h>
 #include <Kernel/Arch/CPU.h>
 #include <Kernel/Arch/InterruptManagement.h>
+#include <Kernel/Arch/PlatformDriver.h>
 #include <Kernel/Arch/Processor.h>
 #include <Kernel/Boot/BootInfo.h>
 #include <Kernel/Boot/CommandLine.h>
@@ -93,8 +94,8 @@ extern "C" u8 start_of_safemem_atomic_text[];
 extern "C" u8 end_of_safemem_atomic_text[];
 #endif
 
-extern "C" USB::DriverInitFunction driver_init_table_start[];
-extern "C" USB::DriverInitFunction driver_init_table_end[];
+extern "C" DriverInitFunction driver_init_table_start[];
+extern "C" DriverInitFunction driver_init_table_end[];
 
 extern "C" u8 end_of_kernel_image[];
 
@@ -419,6 +420,12 @@ void init_stage2(void*)
     if (!PCI::Access::is_disabled()) {
         USB::USBManagement::initialize();
     }
+
+    // NOTE: This loop will initiailize all USB & platform-specific
+    // drivers that are compiled right now in the kernel image.
+    for (auto* init_function = driver_init_table_start; init_function != driver_init_table_end; init_function++)
+        (*init_function)();
+
     SysFSFirmwareDirectory::initialize();
 
     if (!PCI::Access::is_disabled()) {
@@ -440,16 +447,12 @@ void init_stage2(void*)
 
     AudioManagement::the().initialize();
 
-    // Initialize all USB Drivers
-    for (auto* init_function = driver_init_table_start; init_function != driver_init_table_end; init_function++)
-        (*init_function)();
-
-    StorageManagement::the().initialize(kernel_command_line().is_nvme_polling_enabled());
-    for (int i = 0; i < 5; ++i) {
+    StorageManagement::the().initialize();
+    for (int i = 0; i < 10000; ++i) {
         if (StorageManagement::the().determine_boot_device(kernel_command_line().root_device()))
             break;
-        dbgln_if(STORAGE_DEVICE_DEBUG, "Boot device {} not found, sleeping 2 seconds", kernel_command_line().root_device());
-        (void)Thread::current()->sleep(Duration::from_seconds(2));
+        dbgln_if(STORAGE_DEVICE_DEBUG, "Boot device {} not found, sleeping 100 milliseconds", kernel_command_line().root_device());
+        (void)Thread::current()->sleep(Duration::from_milliseconds(100));
     }
     if (VirtualFileSystem::the().mount_root(StorageManagement::the().root_filesystem()).is_error()) {
         PANIC("VirtualFileSystem::mount_root failed");

@@ -21,6 +21,7 @@ set(KERNEL_SOURCES
     Arch/init.cpp
     Arch/DeferredCallPool.cpp
     Arch/PageFault.cpp
+    Arch/PlatformDriver.cpp
     Arch/Processor.cpp
     Arch/TrapFrame.cpp
     Boot/CommandLine.cpp
@@ -470,6 +471,7 @@ elseif("${SERENITY_ARCH}" STREQUAL "aarch64")
         Arch/aarch64/RPi/InterruptController.cpp
         Arch/aarch64/RPi/Mailbox.cpp
         Arch/aarch64/RPi/MiniUART.cpp
+        Arch/aarch64/RPi/SDHCDriver.cpp
         Arch/aarch64/RPi/SDHostController.cpp
         Arch/aarch64/RPi/Timer.cpp
         Arch/aarch64/RPi/UART.cpp
