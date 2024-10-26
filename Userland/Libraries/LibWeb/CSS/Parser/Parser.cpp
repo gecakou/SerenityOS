@@ -14,6 +14,7 @@
 #include <AK/CharacterTypes.h>
 #include <AK/Debug.h>
 #include <AK/GenericLexer.h>
+#include <AK/QuickSort.h>
 #include <AK/SourceLocation.h>
 #include <AK/TemporaryChange.h>
 #include <LibWeb/CSS/CSSFontFaceRule.h>
@@ -70,6 +71,7 @@
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/MathDepthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
+#include <LibWeb/CSS/StyleValues/OpenTypeTaggedStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PositionStyleValue.h>
 #include <LibWeb/CSS/StyleValues/RatioStyleValue.h>
@@ -3347,7 +3349,7 @@ RefPtr<CSSStyleValue> Parser::parse_counter_value(TokenStream<ComponentValue>& t
 
         TokenStream string_tokens { function_values[1] };
         string_tokens.skip_whitespace();
-        RefPtr<CSSStyleValue> join_string = parse_string_value(string_tokens);
+        auto join_string = parse_string_value(string_tokens);
         string_tokens.skip_whitespace();
         if (!join_string || string_tokens.has_next_token())
             return nullptr;
@@ -3364,7 +3366,7 @@ RefPtr<CSSStyleValue> Parser::parse_counter_value(TokenStream<ComponentValue>& t
         }
 
         transaction.commit();
-        return CounterStyleValue::create_counters(counter_name.release_value(), join_string->as_string().string_value(), counter_style.release_nonnull());
+        return CounterStyleValue::create_counters(counter_name.release_value(), join_string->string_value(), counter_style.release_nonnull());
     }
 
     return nullptr;
@@ -3434,7 +3436,7 @@ RefPtr<CSSStyleValue> Parser::parse_ratio_value(TokenStream<ComponentValue>& tok
     return nullptr;
 }
 
-RefPtr<CSSStyleValue> Parser::parse_string_value(TokenStream<ComponentValue>& tokens)
+RefPtr<StringStyleValue> Parser::parse_string_value(TokenStream<ComponentValue>& tokens)
 {
     auto peek = tokens.peek_token();
     if (peek.is(Token::Type::String)) {
@@ -3863,18 +3865,18 @@ RefPtr<CSSStyleValue> Parser::parse_simple_comma_separated_value_list(PropertyID
     });
 }
 
-RefPtr<CSSStyleValue> Parser::parse_all_as_single_none_value(TokenStream<ComponentValue>& tokens)
+RefPtr<CSSStyleValue> Parser::parse_all_as_single_keyword_value(TokenStream<ComponentValue>& tokens, Keyword keyword)
 {
     auto transaction = tokens.begin_transaction();
     tokens.skip_whitespace();
-    auto maybe_none = tokens.next_token();
+    auto keyword_value = parse_keyword_value(tokens);
     tokens.skip_whitespace();
 
-    if (tokens.has_next_token() || !maybe_none.is_ident("none"sv))
+    if (tokens.has_next_token() || !keyword_value || keyword_value->to_keyword() != keyword)
         return {};
 
     transaction.commit();
-    return CSSKeywordValue::create(Keyword::None);
+    return keyword_value;
 }
 
 static void remove_property(Vector<PropertyID>& properties, PropertyID property_to_remove)
@@ -4588,7 +4590,7 @@ RefPtr<CSSStyleValue> Parser::parse_columns_value(TokenStream<ComponentValue>& t
 RefPtr<CSSStyleValue> Parser::parse_shadow_value(TokenStream<ComponentValue>& tokens, AllowInsetKeyword allow_inset_keyword)
 {
     // "none"
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     return parse_comma_separated_value_list(tokens, [this, allow_inset_keyword](auto& tokens) {
@@ -4769,7 +4771,7 @@ RefPtr<CSSStyleValue> Parser::parse_content_value(TokenStream<ComponentValue>& t
 RefPtr<CSSStyleValue> Parser::parse_counter_increment_value(TokenStream<ComponentValue>& tokens)
 {
     // [ <counter-name> <integer>? ]+ | none
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     return parse_counter_definitions_value(tokens, AllowReversed::No, 1);
@@ -4779,7 +4781,7 @@ RefPtr<CSSStyleValue> Parser::parse_counter_increment_value(TokenStream<Componen
 RefPtr<CSSStyleValue> Parser::parse_counter_reset_value(TokenStream<ComponentValue>& tokens)
 {
     // [ <counter-name> <integer>? | <reversed-counter-name> <integer>? ]+ | none
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     return parse_counter_definitions_value(tokens, AllowReversed::Yes, 0);
@@ -4789,7 +4791,7 @@ RefPtr<CSSStyleValue> Parser::parse_counter_reset_value(TokenStream<ComponentVal
 RefPtr<CSSStyleValue> Parser::parse_counter_set_value(TokenStream<ComponentValue>& tokens)
 {
     // [ <counter-name> <integer>? ]+ | none
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     return parse_counter_definitions_value(tokens, AllowReversed::No, 0);
@@ -4928,7 +4930,7 @@ RefPtr<CSSStyleValue> Parser::parse_display_value(TokenStream<ComponentValue>& t
 
 RefPtr<CSSStyleValue> Parser::parse_filter_value_list_value(TokenStream<ComponentValue>& tokens)
 {
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     auto transaction = tokens.begin_transaction();
@@ -5448,43 +5450,149 @@ RefPtr<CSSStyleValue> Parser::parse_font_language_override_value(TokenStream<Com
     // This is `normal | <string>` but with the constraint that the string has to be 4 characters long:
     // Shorter strings are right-padded with spaces, and longer strings are invalid.
 
-    {
-        auto transaction = tokens.begin_transaction();
-        tokens.skip_whitespace();
-        if (auto keyword = parse_keyword_value(tokens); keyword->to_keyword() == Keyword::Normal) {
-            tokens.skip_whitespace();
-            if (tokens.has_next_token()) {
-                dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-language-override: unexpected trailing tokens");
-                return nullptr;
-            }
-            transaction.commit();
-            return keyword;
-        }
-    }
+    if (auto normal = parse_all_as_single_keyword_value(tokens, Keyword::Normal))
+        return normal;
 
-    {
-        auto transaction = tokens.begin_transaction();
+    auto transaction = tokens.begin_transaction();
+    tokens.skip_whitespace();
+    if (auto string = parse_string_value(tokens)) {
+        auto string_value = string->string_value();
         tokens.skip_whitespace();
-        if (auto string = parse_string_value(tokens)) {
-            auto string_value = string->as_string().string_value();
-            tokens.skip_whitespace();
-            if (tokens.has_next_token()) {
-                dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-language-override: unexpected trailing tokens");
-                return nullptr;
-            }
-            auto length = string_value.code_points().length();
-            if (length > 4) {
-                dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-language-override: <string> value \"{}\" is too long", string_value);
-                return nullptr;
-            }
-            transaction.commit();
-            if (length < 4)
-                return StringStyleValue::create(MUST(String::formatted("{<4}", string_value)));
-            return string;
+        if (tokens.has_next_token()) {
+            dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-language-override: unexpected trailing tokens");
+            return nullptr;
         }
+        auto length = string_value.code_points().length();
+        if (length > 4) {
+            dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-language-override: <string> value \"{}\" is too long", string_value);
+            return nullptr;
+        }
+        transaction.commit();
+        if (length < 4)
+            return StringStyleValue::create(MUST(String::formatted("{<4}", string_value)));
+        return string;
     }
 
     return nullptr;
+}
+
+RefPtr<CSSStyleValue> Parser::parse_font_feature_settings_value(TokenStream<ComponentValue>& tokens)
+{
+    // https://drafts.csswg.org/css-fonts/#propdef-font-feature-settings
+    // normal | <feature-tag-value>#
+
+    // normal
+    if (auto normal = parse_all_as_single_keyword_value(tokens, Keyword::Normal))
+        return normal;
+
+    // <feature-tag-value>#
+    auto transaction = tokens.begin_transaction();
+    auto tag_values = parse_a_comma_separated_list_of_component_values(tokens);
+
+    // "The computed value of font-feature-settings is a map, so any duplicates in the specified value must not be preserved.
+    // If the same feature tag appears more than once, the value associated with the last appearance supersedes any previous
+    // value for that axis."
+    // So, we deduplicate them here using a HashSet.
+
+    OrderedHashMap<FlyString, NonnullRefPtr<OpenTypeTaggedStyleValue>> feature_tags_map;
+    for (auto const& values : tag_values) {
+        // <feature-tag-value> = <opentype-tag> [ <integer [0,∞]> | on | off ]?
+        TokenStream tag_tokens { values };
+        tag_tokens.skip_whitespace();
+        auto opentype_tag = parse_opentype_tag_value(tag_tokens);
+        tag_tokens.skip_whitespace();
+        RefPtr<CSSStyleValue> value;
+        if (tag_tokens.has_next_token()) {
+            if (auto integer = parse_integer_value(tag_tokens)) {
+                if (integer->is_integer() && integer->as_integer().value() < 0)
+                    return nullptr;
+                value = integer;
+            } else {
+                // A value of on is synonymous with 1 and off is synonymous with 0.
+                auto keyword = parse_keyword_value(tag_tokens);
+                if (!keyword)
+                    return nullptr;
+                switch (keyword->to_keyword()) {
+                case Keyword::On:
+                    value = IntegerStyleValue::create(1);
+                    break;
+                case Keyword::Off:
+                    value = IntegerStyleValue::create(0);
+                    break;
+                default:
+                    return nullptr;
+                }
+            }
+            tag_tokens.skip_whitespace();
+        } else {
+            // "If the value is omitted, a value of 1 is assumed."
+            value = IntegerStyleValue::create(1);
+        }
+
+        if (!opentype_tag || !value || tag_tokens.has_next_token())
+            return nullptr;
+
+        feature_tags_map.set(opentype_tag->string_value(), OpenTypeTaggedStyleValue::create(opentype_tag->string_value(), value.release_nonnull()));
+    }
+
+    // "The computed value contains the de-duplicated feature tags, sorted in ascending order by code unit."
+    StyleValueVector feature_tags;
+    feature_tags.ensure_capacity(feature_tags_map.size());
+    for (auto const& [key, feature_tag] : feature_tags_map)
+        feature_tags.append(feature_tag);
+
+    quick_sort(feature_tags, [](auto& a, auto& b) {
+        return a->as_open_type_tagged().tag() < b->as_open_type_tagged().tag();
+    });
+
+    transaction.commit();
+    return StyleValueList::create(move(feature_tags), StyleValueList::Separator::Comma);
+}
+
+RefPtr<CSSStyleValue> Parser::parse_font_variation_settings_value(TokenStream<ComponentValue>& tokens)
+{
+    // https://drafts.csswg.org/css-fonts/#propdef-font-variation-settings
+    // normal | [ <opentype-tag> <number>]#
+
+    // normal
+    if (auto normal = parse_all_as_single_keyword_value(tokens, Keyword::Normal))
+        return normal;
+
+    // [ <opentype-tag> <number>]#
+    auto transaction = tokens.begin_transaction();
+    auto tag_values = parse_a_comma_separated_list_of_component_values(tokens);
+
+    // "If the same axis name appears more than once, the value associated with the last appearance supersedes any
+    // previous value for that axis. This deduplication is observable by accessing the computed value of this property."
+    // So, we deduplicate them here using a HashSet.
+
+    OrderedHashMap<FlyString, NonnullRefPtr<OpenTypeTaggedStyleValue>> axis_tags_map;
+    for (auto const& values : tag_values) {
+        TokenStream tag_tokens { values };
+        tag_tokens.skip_whitespace();
+        auto opentype_tag = parse_opentype_tag_value(tag_tokens);
+        tag_tokens.skip_whitespace();
+        auto number = parse_number_value(tag_tokens);
+        tag_tokens.skip_whitespace();
+
+        if (!opentype_tag || !number || tag_tokens.has_next_token())
+            return nullptr;
+
+        axis_tags_map.set(opentype_tag->string_value(), OpenTypeTaggedStyleValue::create(opentype_tag->string_value(), number.release_nonnull()));
+    }
+
+    // "The computed value contains the de-duplicated axis names, sorted in ascending order by code unit."
+    StyleValueVector axis_tags;
+    axis_tags.ensure_capacity(axis_tags_map.size());
+    for (auto const& [key, axis_tag] : axis_tags_map)
+        axis_tags.append(axis_tag);
+
+    quick_sort(axis_tags, [](auto& a, auto& b) {
+        return a->as_open_type_tagged().tag() < b->as_open_type_tagged().tag();
+    });
+
+    transaction.commit();
+    return StyleValueList::create(move(axis_tags), StyleValueList::Separator::Comma);
 }
 
 JS::GCPtr<CSSFontFaceRule> Parser::parse_font_face_rule(TokenStream<ComponentValue>& tokens)
@@ -5503,6 +5611,8 @@ JS::GCPtr<CSSFontFaceRule> Parser::parse_font_face_rule(TokenStream<ComponentVal
     Optional<Percentage> line_gap_override;
     FontDisplay font_display = FontDisplay::Auto;
     Optional<FlyString> language_override;
+    Optional<OrderedHashMap<FlyString, i64>> font_feature_settings;
+    Optional<OrderedHashMap<FlyString, double>> font_variation_settings;
 
     // "normal" is returned as nullptr
     auto parse_as_percentage_or_normal = [&](Vector<ComponentValue> const& values) -> ErrorOr<Optional<Percentage>> {
@@ -5622,6 +5732,40 @@ JS::GCPtr<CSSFontFaceRule> Parser::parse_font_face_rule(TokenStream<ComponentVal
             font_family = String::join(' ', font_family_parts).release_value_but_fixme_should_propagate_errors();
             continue;
         }
+        if (declaration.name().equals_ignoring_ascii_case("font-feature-settings"sv)) {
+            TokenStream token_stream { declaration.values() };
+            if (auto value = parse_css_value(CSS::PropertyID::FontFeatureSettings, token_stream); !value.is_error()) {
+                if (value.value()->to_keyword() == Keyword::Normal) {
+                    font_feature_settings.clear();
+                } else if (value.value()->is_value_list()) {
+                    auto const& feature_tags = value.value()->as_value_list().values();
+                    OrderedHashMap<FlyString, i64> settings;
+                    settings.ensure_capacity(feature_tags.size());
+                    for (auto const& feature_tag : feature_tags) {
+                        if (!feature_tag->is_open_type_tagged()) {
+                            dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Value in font-feature-settings descriptor is not an OpenTypeTaggedStyleValue; skipping");
+                            continue;
+                        }
+                        auto const& setting_value = feature_tag->as_open_type_tagged().value();
+                        if (setting_value->is_integer()) {
+                            settings.set(feature_tag->as_open_type_tagged().tag(), setting_value->as_integer().integer());
+                        } else if (setting_value->is_math() && setting_value->as_math().resolves_to_number()) {
+                            if (auto integer = setting_value->as_math().resolve_integer(); integer.has_value()) {
+                                settings.set(feature_tag->as_open_type_tagged().tag(), *integer);
+                            } else {
+                                dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Calculated value in font-feature-settings descriptor cannot be resolved at parse time; skipping");
+                            }
+                        } else {
+                            dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Value in font-feature-settings descriptor is not an OpenTypeTaggedStyleValue holding a <integer>; skipping");
+                        }
+                    }
+                    font_feature_settings = move(settings);
+                } else {
+                    dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-feature-settings descriptor, not compatible with value returned from parsing font-feature-settings property: {}", value.value()->to_string());
+                }
+            }
+            continue;
+        }
         if (declaration.name().equals_ignoring_ascii_case("font-language-override"sv)) {
             TokenStream token_stream { declaration.values() };
             if (auto maybe_value = parse_css_value(CSS::PropertyID::FontLanguageOverride, token_stream); !maybe_value.is_error()) {
@@ -5659,6 +5803,40 @@ JS::GCPtr<CSSFontFaceRule> Parser::parse_font_face_rule(TokenStream<ComponentVal
             TokenStream token_stream { declaration.values() };
             if (auto value = parse_css_value(CSS::PropertyID::FontStyle, token_stream); !value.is_error()) {
                 slope = value.value()->to_font_slope();
+            }
+            continue;
+        }
+        if (declaration.name().equals_ignoring_ascii_case("font-variation-settings"sv)) {
+            TokenStream token_stream { declaration.values() };
+            if (auto value = parse_css_value(CSS::PropertyID::FontVariationSettings, token_stream); !value.is_error()) {
+                if (value.value()->to_keyword() == Keyword::Normal) {
+                    font_variation_settings.clear();
+                } else if (value.value()->is_value_list()) {
+                    auto const& variation_tags = value.value()->as_value_list().values();
+                    OrderedHashMap<FlyString, double> settings;
+                    settings.ensure_capacity(variation_tags.size());
+                    for (auto const& variation_tag : variation_tags) {
+                        if (!variation_tag->is_open_type_tagged()) {
+                            dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Value in font-variation-settings descriptor is not an OpenTypeTaggedStyleValue; skipping");
+                            continue;
+                        }
+                        auto const& setting_value = variation_tag->as_open_type_tagged().value();
+                        if (setting_value->is_number()) {
+                            settings.set(variation_tag->as_open_type_tagged().tag(), setting_value->as_number().number());
+                        } else if (setting_value->is_math() && setting_value->as_math().resolves_to_number()) {
+                            if (auto number = setting_value->as_math().resolve_number(); number.has_value()) {
+                                settings.set(variation_tag->as_open_type_tagged().tag(), *number);
+                            } else {
+                                dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Calculated value in font-variation-settings descriptor cannot be resolved at parse time; skipping");
+                            }
+                        } else {
+                            dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Value in font-variation-settings descriptor is not an OpenTypeTaggedStyleValue holding a <number>; skipping");
+                        }
+                    }
+                    font_variation_settings = move(settings);
+                } else {
+                    dbgln_if(CSS_PARSER_DEBUG, "CSSParser: Failed to parse font-variation-settings descriptor, not compatible with value returned from parsing font-variation-settings property: {}", value.value()->to_string());
+                }
             }
             continue;
         }
@@ -5715,7 +5893,7 @@ JS::GCPtr<CSSFontFaceRule> Parser::parse_font_face_rule(TokenStream<ComponentVal
         unicode_range.empend(0x0u, 0x10FFFFu);
     }
 
-    return CSSFontFaceRule::create(m_context.realm(), ParsedFontFace { font_family.release_value(), move(weight), move(slope), move(width), move(src), move(unicode_range), move(ascent_override), move(descent_override), move(line_gap_override), font_display, move(font_named_instance), move(language_override) });
+    return CSSFontFaceRule::create(m_context.realm(), ParsedFontFace { font_family.release_value(), move(weight), move(slope), move(width), move(src), move(unicode_range), move(ascent_override), move(descent_override), move(line_gap_override), font_display, move(font_named_instance), move(language_override), move(font_feature_settings), move(font_variation_settings) });
 }
 
 Vector<ParsedFontFace::Source> Parser::parse_as_font_face_src()
@@ -6338,7 +6516,7 @@ RefPtr<CSSStyleValue> Parser::parse_transform_value(TokenStream<ComponentValue>&
     // <transform> = none | <transform-list>
     // <transform-list> = <transform-function>+
 
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     StyleValueVector transformations;
@@ -6590,7 +6768,7 @@ RefPtr<CSSStyleValue> Parser::parse_transform_origin_value(TokenStream<Component
 
 RefPtr<CSSStyleValue> Parser::parse_transition_value(TokenStream<ComponentValue>& tokens)
 {
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return none;
 
     Vector<TransitionStyleValue::Transition> transitions;
@@ -6896,7 +7074,7 @@ Optional<CSS::ExplicitGridTrack> Parser::parse_track_sizing_function(ComponentVa
 
 RefPtr<CSSStyleValue> Parser::parse_grid_track_size_list(TokenStream<ComponentValue>& tokens, bool allow_separate_line_name_blocks)
 {
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return GridTrackSizeListStyleValue::make_none();
 
     auto transaction = tokens.begin_transaction();
@@ -7392,7 +7570,7 @@ RefPtr<CSSStyleValue> Parser::parse_grid_template_areas_value(TokenStream<Compon
     // none | <string>+
     Vector<Vector<String>> grid_area_rows;
 
-    if (auto none = parse_all_as_single_none_value(tokens))
+    if (auto none = parse_all_as_single_keyword_value(tokens, Keyword::None))
         return GridTemplateAreaStyleValue::create(move(grid_area_rows));
 
     auto transaction = tokens.begin_transaction();
@@ -7581,8 +7759,16 @@ Parser::ParseErrorOr<NonnullRefPtr<CSSStyleValue>> Parser::parse_css_value(Prope
         if (auto parsed_value = parse_font_family_value(tokens); parsed_value && !tokens.has_next_token())
             return parsed_value.release_nonnull();
         return ParseError::SyntaxError;
+    case PropertyID::FontFeatureSettings:
+        if (auto parsed_value = parse_font_feature_settings_value(tokens); parsed_value && !tokens.has_next_token())
+            return parsed_value.release_nonnull();
+        return ParseError::SyntaxError;
     case PropertyID::FontLanguageOverride:
         if (auto parsed_value = parse_font_language_override_value(tokens); parsed_value && !tokens.has_next_token())
+            return parsed_value.release_nonnull();
+        return ParseError::SyntaxError;
+    case PropertyID::FontVariationSettings:
+        if (auto parsed_value = parse_font_variation_settings_value(tokens); parsed_value && !tokens.has_next_token())
             return parsed_value.release_nonnull();
         return ParseError::SyntaxError;
     case PropertyID::GridArea:
@@ -7892,6 +8078,11 @@ Optional<Parser::PropertyAndValue> Parser::parse_css_value_for_properties(Readon
                 return PropertyAndValue { *property_accepting_number, number };
             }
         }
+    }
+
+    if (auto property = any_property_accepts_type(property_ids, ValueType::OpenTypeTag); property.has_value()) {
+        if (auto maybe_rect = parse_opentype_tag_value(tokens))
+            return PropertyAndValue { *property, maybe_rect };
     }
 
     if (peek_token.is(Token::Type::Percentage)) {
@@ -8816,6 +9007,31 @@ bool Parser::substitute_attr_function(DOM::Element& element, FlyString const& pr
 
     // 3. Otherwise, the property containing the attr() function is invalid at computed-value time.
     return false;
+}
+
+// https://drafts.csswg.org/css-fonts/#typedef-opentype-tag
+RefPtr<StringStyleValue> Parser::parse_opentype_tag_value(TokenStream<ComponentValue>& tokens)
+{
+    // <opentype-tag> = <string>
+    // The <opentype-tag> is a case-sensitive OpenType feature tag.
+    // As specified in the OpenType specification [OPENTYPE], feature tags contain four ASCII characters.
+    // Tag strings longer or shorter than four characters, or containing characters outside the U+20–7E codepoint range are invalid.
+
+    auto transaction = tokens.begin_transaction();
+    auto string_value = parse_string_value(tokens);
+    if (string_value == nullptr)
+        return nullptr;
+
+    auto string = string_value->string_value().bytes_as_string_view();
+    if (string.length() != 4)
+        return nullptr;
+    for (char c : string) {
+        if (c < 0x20 || c > 0x7E)
+            return nullptr;
+    }
+
+    transaction.commit();
+    return string_value;
 }
 
 }

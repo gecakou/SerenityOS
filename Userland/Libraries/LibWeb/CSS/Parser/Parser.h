@@ -306,7 +306,7 @@ private:
     RefPtr<CSSStyleValue> parse_counter_definitions_value(TokenStream<ComponentValue>&, AllowReversed, i32 default_value_if_not_reversed);
     RefPtr<CSSStyleValue> parse_rect_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_ratio_value(TokenStream<ComponentValue>&);
-    RefPtr<CSSStyleValue> parse_string_value(TokenStream<ComponentValue>&);
+    RefPtr<StringStyleValue> parse_string_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_image_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_paint_value(TokenStream<ComponentValue>&);
     enum class PositionParsingMode {
@@ -315,6 +315,7 @@ private:
     };
     RefPtr<PositionStyleValue> parse_position_value(TokenStream<ComponentValue>&, PositionParsingMode = PositionParsingMode::Normal);
     RefPtr<CSSStyleValue> parse_filter_value_list_value(TokenStream<ComponentValue>&);
+    RefPtr<StringStyleValue> parse_opentype_tag_value(TokenStream<ComponentValue>&);
 
     RefPtr<CSSStyleValue> parse_dimension_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_angle_value(TokenStream<ComponentValue>&);
@@ -335,7 +336,7 @@ private:
     template<typename ParseFunction>
     RefPtr<CSSStyleValue> parse_comma_separated_value_list(TokenStream<ComponentValue>&, ParseFunction);
     RefPtr<CSSStyleValue> parse_simple_comma_separated_value_list(PropertyID, TokenStream<ComponentValue>&);
-    RefPtr<CSSStyleValue> parse_all_as_single_none_value(TokenStream<ComponentValue>&);
+    RefPtr<CSSStyleValue> parse_all_as_single_keyword_value(TokenStream<ComponentValue>&, Keyword);
 
     RefPtr<CSSStyleValue> parse_aspect_ratio_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_background_value(TokenStream<ComponentValue>&);
@@ -356,6 +357,8 @@ private:
     RefPtr<CSSStyleValue> parse_font_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_font_family_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_font_language_override_value(TokenStream<ComponentValue>&);
+    RefPtr<CSSStyleValue> parse_font_feature_settings_value(TokenStream<ComponentValue>&);
+    RefPtr<CSSStyleValue> parse_font_variation_settings_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_list_style_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_math_depth_value(TokenStream<ComponentValue>&);
     RefPtr<CSSStyleValue> parse_overflow_value(TokenStream<ComponentValue>&);

@@ -1,6 +1,6 @@
 /*
  * Copyright (c) 2018-2024, Andreas Kling <andreas@ladybird.org>
- * Copyright (c) 2021-2024, Sam Atkins <atkinssj@serenityos.org>
+ * Copyright (c) 2021-2024, Sam Atkins <sam@ladybird.org>
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -23,6 +23,7 @@
 #include <LibWeb/CSS/StyleValues/LengthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/MathDepthStyleValue.h>
 #include <LibWeb/CSS/StyleValues/NumberStyleValue.h>
+#include <LibWeb/CSS/StyleValues/OpenTypeTaggedStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PercentageStyleValue.h>
 #include <LibWeb/CSS/StyleValues/PositionStyleValue.h>
 #include <LibWeb/CSS/StyleValues/RectStyleValue.h>
@@ -1027,6 +1028,60 @@ Optional<FlyString> StyleProperties::font_language_override() const
     auto value = property(CSS::PropertyID::FontLanguageOverride);
     if (value->is_string())
         return value->as_string().string_value();
+    return {};
+}
+
+Optional<HashMap<FlyString, IntegerOrCalculated>> StyleProperties::font_feature_settings() const
+{
+    auto value = property(PropertyID::FontFeatureSettings);
+
+    if (value->is_keyword())
+        return {}; // normal
+
+    if (value->is_value_list()) {
+        auto const& feature_tags = value->as_value_list().values();
+        HashMap<FlyString, IntegerOrCalculated> result;
+        result.ensure_capacity(feature_tags.size());
+        for (auto const& tag_value : feature_tags) {
+            auto const& feature_tag = tag_value->as_open_type_tagged();
+
+            if (feature_tag.value()->is_integer()) {
+                result.set(feature_tag.tag(), feature_tag.value()->as_integer().value());
+            } else {
+                VERIFY(feature_tag.value()->is_math());
+                result.set(feature_tag.tag(), IntegerOrCalculated { feature_tag.value()->as_math() });
+            }
+        }
+        return result;
+    }
+
+    return {};
+}
+
+Optional<HashMap<FlyString, NumberOrCalculated>> StyleProperties::font_variation_settings() const
+{
+    auto value = property(CSS::PropertyID::FontVariationSettings);
+
+    if (value->is_keyword())
+        return {}; // normal
+
+    if (value->is_value_list()) {
+        auto const& axis_tags = value->as_value_list().values();
+        HashMap<FlyString, NumberOrCalculated> result;
+        result.ensure_capacity(axis_tags.size());
+        for (auto const& tag_value : axis_tags) {
+            auto const& axis_tag = tag_value->as_open_type_tagged();
+
+            if (axis_tag.value()->is_number()) {
+                result.set(axis_tag.tag(), axis_tag.value()->as_number().value());
+            } else {
+                VERIFY(axis_tag.value()->is_math());
+                result.set(axis_tag.tag(), NumberOrCalculated { axis_tag.value()->as_math() });
+            }
+        }
+        return result;
+    }
+
     return {};
 }
 
